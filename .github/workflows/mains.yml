@@ -34,41 +34,39 @@ jobs:
               Set-LocalUser -Name "RDP" -Password $securePass
           }
 
-      # 3. Install Ngrok AND REFRESH PATH
+      # 3. Install Ngrok
       - name: Install Ngrok
         run: |
           choco install ngrok -y
-          
-          # CRITICAL FIX: Force refresh the Environment Variables so 'ngrok' command is found
           $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-          
-          # Verify installation
           Write-Host "Ngrok Version:"
           ngrok version
 
-      # 4. Establish Ngrok Tunnel (PATH REFRESH + VISIBLE DEBUG)
+      # 4. Establish Ngrok Tunnel (FIXED ARGUMENTS & LOG PATH)
       - name: Establish Ngrok Connection
         run: |
-          # Refresh PATH again just to be safe
+          # Refresh PATH
           $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
 
           # Add your authtoken
           ngrok config add-authtoken 344s6dLHPfKXl5s8zjiE4nDEhGM_3rEEvhRz2HujCa1mcxuM3
           
-          # Run Diagnostics to check Auth
-          Write-Host "Running Ngrok Diagnostics..."
-          ngrok diagnose
+          # Define explicit log file path in temp directory
+          $logFile = "$env:TEMP\ngrok.log"
           
-          # Kill any existing ngrok processes
+          # Clean up any old log
+          Remove-Item -Path $logFile -ErrorAction SilentlyContinue
+          
+          # Kill existing processes
           Get-Process -Name ngrok -ErrorAction SilentlyContinue | Stop-Process -Force
           
-          # Start Ngrok.
-          # FIX: Remove 'Hidden' window style so we can see errors in the log if it crashes.
-          # FIX: Removed --region to avoid any potential plan restrictions.
-          Start-Process -WindowStyle Normal -FilePath "ngrok" -ArgumentList "tcp 3389 --log=ngrok.log"
+          # Start Ngrok
+          # FIX: Pass arguments as an array to avoid parsing issues.
+          # FIX: Use --log-level debug to capture more info if it crashes.
+          Start-Process -WindowStyle Hidden -FilePath "ngrok" -ArgumentList "tcp", "3389", "--log", "$logFile", "--log-level", "debug"
           
-          Write-Host "Waiting for Ngrok to initialize..."
-          Start-Sleep -Seconds 5
+          Write-Host "Waiting for Ngrok process to start..."
+          Start-Sleep -Seconds 3
           
           $ngrokUrl = $null
           $retries = 0
@@ -81,9 +79,12 @@ jobs:
               # 1. Check if process is running
               $process = Get-Process -Name ngrok -ErrorAction SilentlyContinue
               if (-not $process) {
-                  Write-Error "Ngrok process crashed! Printing log file:"
-                  Get-Content ngrok.log | Write-Host
-                  Write-Error "Check the log above for the crash reason."
+                  Write-Error "Ngrok process crashed! Attempting to read log file:"
+                  if (Test-Path $logFile) {
+                      Get-Content $logFile | Write-Host
+                  } else {
+                      Write-Host "Log file not found at $logFile. Ngrok exited immediately."
+                  }
                   exit 1
               }
               
@@ -110,7 +111,9 @@ jobs:
           if (-not $ngrokUrl) {
               Write-Error "Failed to retrieve Ngrok URL after $maxRetries attempts."
               Write-Host "Printing Ngrok logs for debugging:"
-              Get-Content ngrok.log | Write-Host
+              if (Test-Path $logFile) {
+                  Get-Content $logFile | Write-Host
+              }
               exit 1
           }
           
