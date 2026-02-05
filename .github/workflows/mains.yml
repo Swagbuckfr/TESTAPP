@@ -1,0 +1,152 @@
+name: R Fixed Ngrok
+
+on:
+  workflow_dispatch:
+
+jobs:
+  secure-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 3600
+
+    steps:
+      # 1. Enable RDP and Configure Firewall
+      - name: Configure RDP Settings
+        run: |
+          # Enable Remote Desktop
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          
+          # Disable Network Level Authentication (Allows connection without initial auth screen)
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+          
+          # Remove old firewall rules to avoid duplicates
+          netsh advfirewall firewall delete rule name="RDP-Ngrok" 2>$null
+          
+          # Allow port 3389 through firewall
+          netsh advfirewall firewall add rule name="RDP-Ngrok" dir=in action=allow protocol=TCP localport=3389
+          
+          # Restart RDP Service to apply changes
+          Restart-Service -Name TermService -Force
+
+      # 2. Manage Users and Passwords
+      - name: Reset Admin Passwords
+        run: |
+          $password = "D12345678@"
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          
+          # Explicitly reset runneradmin password to a known value
+          Write-Host "Resetting runneradmin password..."
+          Set-LocalUser -Name "runneradmin" -Password $securePass
+          
+          # Ensure the 'RDP' user exists and has the same password
+          if (-not (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue)) {
+              New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
+              Add-LocalGroupMember -Group "Administrators" -Member "RDP"
+              Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
+          } else {
+              Set-LocalUser -Name "RDP" -Password $securePass
+          }
+
+      # 3. Install Ngrok
+      - name: Install Ngrok
+        run: |
+          # Install Ngrok via Chocolatey (pre-installed on Windows runners)
+          choco install ngrok -y
+
+      # 4. Establish Ngrok Tunnel
+      - name: Establish Ngrok Connection
+        run: |
+          # Add your authtoken (Required to reserve TCP tunnels/subdomains)
+          ngrok config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
+          
+          # Start Ngrok tunnel for RDP (Port 3389) in a background window
+          # We use Start-Process so the script continues while ngrok runs
+          Start-Process -WindowStyle Hidden -FilePath "ngrok" -ArgumentList "tcp 3389"
+          
+          # Wait a few seconds for ngrok to initialize and connect
+          Write-Host "Waiting for Ngrok tunnel to establish..."
+          Start-Sleep -Seconds 10
+          
+          # Fetch the public URL from the Ngrok local API
+          $retries = 0
+          $ngrokUrl = $null
+          
+          while (-not $ngrokUrl -and $retries -lt 10) {
+              try {
+                  $response = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels"
+                  $ngrokUrl = $response.tunnels[0].public_url
+              } catch {
+                  Write-Host "Retrying connection to Ngrok API..."
+                  Start-Sleep -Seconds 3
+                  $retries++
+              }
+          }
+          
+          if (-not $ngrokUrl) {
+              Write-Error "Failed to retrieve Ngrok URL."
+              exit 1
+          }
+          
+          # Format the URL for RDP (remove tcp:// prefix)
+          $rdpHost = $ngrokUrl -replace "tcp://", ""
+          echo "NGROK_URL=$rdpHost" >> $env:GITHUB_ENV
+          echo "RAW_URL=$ngrokUrl" >> $env:GITHUB_ENV
+
+      # 5. Install Additional Tools (XAMPP & ProxyScrape)
+      - name: Install Additional Tools (XAMPP & ProxyScrape)
+        run: |
+          Write-Host "Downloading ProxyScrape Proxy Checker..."
+          $psUrl = "https://downloads.cdn.proxyscrape.com/proxy-checker/proxyscrape-proxy-checker-v1.1.0-x64-win-installer.exe"
+          $psPath = "$env:TEMP\proxyscrape-installer.exe"
+          curl.exe -L $psUrl -o $psPath
+          
+          Write-Host "Installing ProxyScrape..."
+          Start-Process $psPath -ArgumentList "/S" -Wait
+          Remove-Item $psPath -Force
+
+          Write-Host "Downloading XAMPP..."
+          $xamppUrl = "https://sourceforge.net/projects/xampp/files/XAMPP%20Windows/8.2.12/xampp-windows-x64-8.2.12-0-VS16-installer.exe/download"
+          $xamppPath = "$env:TEMP\xampp-installer.exe"
+          curl.exe -L $xamppUrl -o $xamppPath
+          
+          Write-Host "Installing XAMPP (This may take a few minutes)..."
+          Start-Process $xamppPath -ArgumentList "--mode unattended --unattendedmodeui minimal" -Wait
+          Remove-Item $xamppPath -Force
+          
+          Write-Host "Installation of ProxyScrape and XAMPP completed."
+
+      # 6. Verify Connectivity
+      - name: Verify RDP Accessibility
+        run: |
+          # Check if local RDP port is listening
+          $testResult = Test-NetConnection -ComputerName localhost -Port 3389
+          if (-not $testResult.TcpTestSucceeded) {
+              Write-Error "RDP Port 3389 is not listening locally."
+              exit 1
+          }
+          Write-Host "RDP Port 3389 is Open Locally."
+          Write-Host "Ngrok Tunnel is active at: $env:RAW_URL"
+
+      # 7. Display Credentials and Maintain Connection
+      - name: Display Connection Info
+        run: |
+          Write-Host "`n============================================"
+          Write-Host "   RDP CONNECTION ESTABLISHED (via Ngrok)"
+          Write-Host "============================================"
+          Write-Host "Host/IP    : $env:NGROK_URL"
+          Write-Host "Username   : runneradmin"
+          Write-Host "Password   : D12345678@"
+          Write-Host "--------------------------------------------"
+          Write-Host "Backup User: RDP"
+          Write-Host "Backup Pass: D12345678@"
+          Write-Host "============================================"
+          Write-Host "INSTRUCTIONS:"
+          Write-Host "1. Open Remote Desktop Connection (MSTSC)"
+          Write-Host "2. Paste the Host/IP above into 'Computer'"
+          Write-Host "3. Click Connect."
+          Write-Host "============================================`n"
+          
+          # Keep runner active (keeps the workflow running)
+          while ($true) {
+              Write-Host "[$(Get-Date)] Session Active... (Press 'Cancel Workflow' to stop)"
+              Start-Sleep -Seconds 300
+          }
