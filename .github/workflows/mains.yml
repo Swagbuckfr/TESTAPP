@@ -34,30 +34,45 @@ jobs:
               Set-LocalUser -Name "RDP" -Password $securePass
           }
 
-      # 3. Install Ngrok
+      # 3. Install Ngrok AND REFRESH PATH
       - name: Install Ngrok
         run: |
           choco install ngrok -y
+          
+          # CRITICAL FIX: Force refresh the Environment Variables so 'ngrok' command is found
+          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+          
+          # Verify installation
+          Write-Host "Ngrok Version:"
+          ngrok version
 
-      # 4. Establish Ngrok Tunnel (TOKEN ADDED)
+      # 4. Establish Ngrok Tunnel (PATH REFRESH + VISIBLE DEBUG)
       - name: Establish Ngrok Connection
         run: |
-          # TOKEN: Your specific token is used here
+          # Refresh PATH again just to be safe
+          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+
+          # Add your authtoken
           ngrok config add-authtoken 344s6dLHPfKXl5s8zjiE4nDEhGM_3rEEvhRz2HujCa1mcxuM3
           
-          # Kill any existing ngrok processes to ensure a clean start
+          # Run Diagnostics to check Auth
+          Write-Host "Running Ngrok Diagnostics..."
+          ngrok diagnose
+          
+          # Kill any existing ngrok processes
           Get-Process -Name ngrok -ErrorAction SilentlyContinue | Stop-Process -Force
           
-          # Start Ngrok in background.
-          # --region us : Forces US region (faster connectivity than default).
-          Start-Process -WindowStyle Hidden -FilePath "ngrok" -ArgumentList "tcp 3389 --region us --log=ngrok.log"
+          # Start Ngrok.
+          # FIX: Remove 'Hidden' window style so we can see errors in the log if it crashes.
+          # FIX: Removed --region to avoid any potential plan restrictions.
+          Start-Process -WindowStyle Normal -FilePath "ngrok" -ArgumentList "tcp 3389 --log=ngrok.log"
           
-          Write-Host "Waiting for Ngrok to initialize and bind to API port..."
+          Write-Host "Waiting for Ngrok to initialize..."
           Start-Sleep -Seconds 5
           
           $ngrokUrl = $null
           $retries = 0
-          $maxRetries = 60 # Extended to 120 seconds (60 * 2s)
+          $maxRetries = 60 
           
           while (-not $ngrokUrl -and $retries -lt $maxRetries) {
               $retries++
@@ -66,8 +81,9 @@ jobs:
               # 1. Check if process is running
               $process = Get-Process -Name ngrok -ErrorAction SilentlyContinue
               if (-not $process) {
-                  Write-Error "Ngrok process crashed! Printing log:"
+                  Write-Error "Ngrok process crashed! Printing log file:"
                   Get-Content ngrok.log | Write-Host
+                  Write-Error "Check the log above for the crash reason."
                   exit 1
               }
               
@@ -87,7 +103,6 @@ jobs:
                       Write-Host "Ngrok Tunnel found: $ngrokUrl"
                   }
               } catch {
-                  # API call failed even though port is open (service initializing)
                   Write-Host "Attempt $($retries)/$($maxRetries): API port open, but waiting for data..."
               }
           }
