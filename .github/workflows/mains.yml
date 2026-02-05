@@ -39,38 +39,35 @@ jobs:
         run: |
           choco install ngrok -y
 
-      # 4. Establish Ngrok Tunnel (FIXED RETRY LOGIC)
+      # 4. Establish Ngrok Tunnel (FIXED SYNTAX ERROR)
       - name: Establish Ngrok Connection
         run: |
           # Add your authtoken
           ngrok config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
           
           # Start Ngrok in background
-          # We log to stdout to help debug if it crashes, but hide window
           Start-Process -WindowStyle Hidden -FilePath "ngrok" -ArgumentList "tcp 3389 --log=stdout"
           
           Write-Host "Waiting for Ngrok to initialize..."
           
           $ngrokUrl = $null
           $retries = 0
-          $maxRetries = 30 # Retry for up to 60 seconds (30 * 2s)
+          $maxRetries = 30 
           
           while (-not $ngrokUrl -and $retries -lt $maxRetries) {
               Start-Sleep -Seconds 2
               $retries++
               
               try {
-                  # Query the local API
                   $response = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels" -ErrorAction Stop
                   
-                  # Check if the tunnels array exists and is populated
                   if ($response.tunnels -and $response.tunnels.Count -gt 0) {
                       $ngrokUrl = $response.tunnels[0].public_url
                       Write-Host "Ngrok Tunnel found: $ngrokUrl"
                   }
               } catch {
-                  # API is not ready yet or returned an error, ignore and retry
-                  Write-Host "Attempt $retries/$maxRetries: Waiting for API..."
+                  # FIX: Wrapped variables in $() to handle the colon correctly
+                  Write-Host "Attempt $($retries)/$($maxRetries): Waiting for API..."
               }
           }
           
@@ -80,7 +77,6 @@ jobs:
               exit 1
           }
           
-          # Format for RDP (remove tcp://)
           $rdpHost = $ngrokUrl -replace "tcp://", ""
           echo "NGROK_URL=$rdpHost" >> $env:GITHUB_ENV
           echo "RAW_URL=$ngrokUrl" >> $env:GITHUB_ENV
