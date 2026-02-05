@@ -42,14 +42,14 @@ jobs:
           Write-Host "Ngrok Version:"
           ngrok version
 
-      # 4. Establish Ngrok Tunnel (FIXED ARGUMENTS & LOG PATH)
+      # 4. Establish Ngrok Tunnel (USES SECRET)
       - name: Establish Ngrok Connection
         run: |
           # Refresh PATH
           $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
 
-          # Add your authtoken
-          ngrok config add-authtoken 344s6dLHPfKXl5s8zjiE4nDEhGM_3rEEvhRz2HujCa1mcxuM3
+          # Add your authtoken from secrets
+          ngrok config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
           
           # Define explicit log file path in temp directory
           $logFile = "$env:TEMP\ngrok.log"
@@ -61,9 +61,8 @@ jobs:
           Get-Process -Name ngrok -ErrorAction SilentlyContinue | Stop-Process -Force
           
           # Start Ngrok
-          # FIX: Pass arguments as an array to avoid parsing issues.
-          # FIX: Use --log-level debug to capture more info if it crashes.
-          Start-Process -WindowStyle Hidden -FilePath "ngrok" -ArgumentList "tcp", "3389", "--log", "$logFile", "--log-level", "debug"
+          # Passing arguments as an array to prevent parsing errors
+          Start-Process -WindowStyle Hidden -FilePath "ngrok" -ArgumentList "tcp", "3389", "--log", "$logFile"
           
           Write-Host "Waiting for Ngrok process to start..."
           Start-Sleep -Seconds 3
