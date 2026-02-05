@@ -14,7 +14,7 @@ jobs:
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
-          netsh advfirewall firewall delete rule name="RDP-Ngrok" 2>$null
+          netsh advirewall firewall delete rule name="RDP-Ngrok" 2>$null
           netsh advfirewall firewall add rule name="RDP-Ngrok" dir=in action=allow protocol=TCP localport=3389
           Restart-Service -Name TermService -Force
 
@@ -42,31 +42,25 @@ jobs:
           Write-Host "Ngrok Version:"
           ngrok version
 
-      # 4. Establish Ngrok Tunnel (ROBUST LAUNCH)
+      # 4. Establish Ngrok Tunnel (FIXED CONFIG PATHS)
       - name: Establish Ngrok Connection
         run: |
           # Refresh PATH
           $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
 
-          # Define explicit paths to avoid path issues
-          $configPath = "$env:APPDATA\ngrok\ngrok.yml"
+          # 1. Simply add the token to the default config location (No manual paths)
+          ngrok config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
+          
+          # 2. Clean up
           $logFile = "C:\ngrok.log"
-          
-          # Ensure config directory exists
-          New-Item -ItemType Directory -Path (Split-Path $configPath) -Force | Out-Null
-          
-          # Add token to specific config file
-          ngrok config --config="$configPath" add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
-          
-          # Clean up old process and log
           Get-Process -Name ngrok -ErrorAction SilentlyContinue | Stop-Process -Force
           Remove-Item -Path $logFile -ErrorAction SilentlyContinue
           
-          Write-Host "Starting Ngrok with explicit config: $configPath"
+          Write-Host "Starting Ngrok with default configuration..."
           
-          # LAUNCH FIX: Use cmd /c start /b to launch in background.
-          # This is more reliable in CI for process persistence than Start-Process.
-          cmd /c start /b ngrok tcp 3389 --config="$configPath" --log="$logFile"
+          # 3. Start Ngrok.
+          # FIX: REMOVED the --config flag so it uses the default file created in step 1.
+          cmd /c start /b ngrok tcp 3389 --log="$logFile"
           
           Write-Host "Waiting for Ngrok to start..."
           Start-Sleep -Seconds 5
