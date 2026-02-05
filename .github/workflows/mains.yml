@@ -1,4 +1,4 @@
-name: AM NG
+name: AMNG
 
 on:
   workflow_dispatch:
