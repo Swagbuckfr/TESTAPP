@@ -1,4 +1,4 @@
-name: AMNG
+name: R Fixed 
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
 jobs:
   secure-rdp:
     runs-on: windows-latest
-    timeout-minutes:36000
+    timeout-minutes: 3600
 
     steps:
       # 1. Enable RDP and Configure Firewall
@@ -14,7 +14,7 @@ jobs:
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
-          netsh advirewall firewall delete rule name="RDP-Ngrok" 2>$null
+          netsh advfirewall firewall delete rule name="RDP-Ngrok" 2>$null
           netsh advfirewall firewall add rule name="RDP-Ngrok" dir=in action=allow protocol=TCP localport=3389
           Restart-Service -Name TermService -Force
 
@@ -42,7 +42,7 @@ jobs:
           Write-Host "Ngrok Version:"
           ngrok version
 
-      # 4. Establish Ngrok Tunnel (FIXED CONFIG PATHS)
+      # 4. Establish Ngrok Tunnel
       - name: Establish Ngrok Connection
         run: |
           # Refresh PATH
@@ -58,8 +58,7 @@ jobs:
           
           Write-Host "Starting Ngrok with default configuration..."
           
-          # 3. Start Ngrok.
-          # FIX: REMOVED the --config flag so it uses the default file created in step 1.
+          # 3. Start Ngrok
           cmd /c start /b ngrok tcp 3389 --log="$logFile"
           
           Write-Host "Waiting for Ngrok to start..."
@@ -118,30 +117,7 @@ jobs:
           echo "NGROK_URL=$rdpHost" >> $env:GITHUB_ENV
           echo "RAW_URL=$ngrokUrl" >> $env:GITHUB_ENV
 
-      # 5. Install Additional Tools (XAMPP & ProxyScrape)
-      - name: Install Additional Tools (XAMPP & ProxyScrape)
-        run: |
-          Write-Host "Downloading ProxyScrape Proxy Checker..."
-          $psUrl = "https://downloads.cdn.proxyscrape.com/proxy-checker/proxyscrape-proxy-checker-v1.1.0-x64-win-installer.exe"
-          $psPath = "$env:TEMP\proxyscrape-installer.exe"
-          curl.exe -L $psUrl -o $psPath
-          
-          Write-Host "Installing ProxyScrape..."
-          Start-Process $psPath -ArgumentList "/S" -Wait
-          Remove-Item $psPath -Force
-
-          Write-Host "Downloading XAMPP..."
-          $xamppUrl = "https://sourceforge.net/projects/xampp/files/XAMPP%20Windows/8.2.12/xampp-windows-x64-8.2.12-0-VS16-installer.exe/download"
-          $xamppPath = "$env:TEMP\xampp-installer.exe"
-          curl.exe -L $xamppUrl -o $xamppPath
-          
-          Write-Host "Installing XAMPP (This may take a few minutes)..."
-          Start-Process $xamppPath -ArgumentList "--mode unattended --unattendedmodeui minimal" -Wait
-          Remove-Item $xamppPath -Force
-          
-          Write-Host "Installation of ProxyScrape and XAMPP completed."
-
-      # 6. Verify Connectivity
+      # 5. Verify Connectivity
       - name: Verify RDP Accessibility
         run: |
           $testResult = Test-NetConnection -ComputerName localhost -Port 3389
@@ -151,7 +127,7 @@ jobs:
           }
           Write-Host "RDP Port 3389 is Open Locally."
 
-      # 7. Display Credentials and Maintain Connection
+      # 6. Display Credentials and Maintain Connection
       - name: Display Connection Info
         run: |
           Write-Host "`n============================================"
