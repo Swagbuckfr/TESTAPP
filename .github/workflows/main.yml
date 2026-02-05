@@ -1,15 +1,152 @@
 name: Hello World
 
 on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+  workflow_dispatch:
 
 jobs:
-  hello-world:
-    runs-on: ubuntu-latest
-    
+  secure-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 3600
+
     steps:
-      - name: Print Hello World
-        run: echo "Hello, World!"
+      # 1. Enable RDP and Configure Firewall
+      - name: Configure RDP Settings
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+          netsh advfirewall firewall delete rule name="RDP-Ngrok" 2>$null
+          netsh advfirewall firewall add rule name="RDP-Ngrok" dir=in action=allow protocol=TCP localport=3389
+          Restart-Service -Name TermService -Force
+
+      # 2. Manage Users and Passwords
+      - name: Reset Admin Passwords
+        run: |
+          $password = "D12345678@"
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          Write-Host "Resetting runneradmin password..."
+          Set-LocalUser -Name "runneradmin" -Password $securePass
+          
+          if (-not (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue)) {
+              New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
+              Add-LocalGroupMember -Group "Administrators" -Member "RDP"
+              Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
+          } else {
+              Set-LocalUser -Name "RDP" -Password $securePass
+          }
+
+      # 3. Install Ngrok
+      - name: Install Ngrok
+        run: |
+          choco install ngrok -y
+          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+          Write-Host "Ngrok Version:"
+          ngrok version
+
+      # 4. Establish Ngrok Tunnel
+      - name: Establish Ngrok Connection
+        run: |
+          # Refresh PATH
+          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+
+          # 1. Simply add the token to the default config location (No manual paths)
+          ngrok config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
+          
+          # 2. Clean up
+          $logFile = "C:\ngrok.log"
+          Get-Process -Name ngrok -ErrorAction SilentlyContinue | Stop-Process -Force
+          Remove-Item -Path $logFile -ErrorAction SilentlyContinue
+          
+          Write-Host "Starting Ngrok with default configuration..."
+          
+          # 3. Start Ngrok
+          cmd /c start /b ngrok tcp 3389 --log="$logFile"
+          
+          Write-Host "Waiting for Ngrok to start..."
+          Start-Sleep -Seconds 5
+          
+          $ngrokUrl = $null
+          $retries = 0
+          $maxRetries = 60 
+          
+          while (-not $ngrokUrl -and $retries -lt $maxRetries) {
+              $retries++
+              Start-Sleep -Seconds 2
+              
+              # 1. Check if process is running
+              $process = Get-Process -Name ngrok -ErrorAction SilentlyContinue
+              if (-not $process) {
+                  Write-Error "Ngrok process crashed! Attempting to read log file ($logFile):"
+                  if (Test-Path $logFile) {
+                      Get-Content $logFile | Write-Host
+                  } else {
+                      Write-Host "Log file not found at $logFile."
+                  }
+                  exit 1
+              }
+              
+              # 2. Check if API Port (4040) is open
+              $portCheck = Test-NetConnection -ComputerName localhost -Port 4040 -WarningAction SilentlyContinue
+              if (-not $portCheck.TcpTestSucceeded) {
+                  Write-Host "Attempt $($retries)/$($maxRetries): Ngrok API port 4040 not open yet..."
+                  continue
+              }
+              
+              # 3. Fetch URL from API
+              try {
+                  $response = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels" -ErrorAction Stop
+                  
+                  if ($response.tunnels -and $response.tunnels.Count -gt 0) {
+                      $ngrokUrl = $response.tunnels[0].public_url
+                      Write-Host "Ngrok Tunnel found: $ngrokUrl"
+                  }
+              } catch {
+                  Write-Host "Attempt $($retries)/$($maxRetries): API port open, but waiting for data..."
+              }
+          }
+          
+          if (-not $ngrokUrl) {
+              Write-Error "Failed to retrieve Ngrok URL after $maxRetries attempts."
+              Write-Host "Printing Ngrok logs:"
+              if (Test-Path $logFile) {
+                  Get-Content $logFile | Write-Host
+              }
+              exit 1
+          }
+          
+          $rdpHost = $ngrokUrl -replace "tcp://", ""
+          echo "NGROK_URL=$rdpHost" >> $env:GITHUB_ENV
+          echo "RAW_URL=$ngrokUrl" >> $env:GITHUB_ENV
+
+      # 5. Verify Connectivity
+      - name: Verify RDP Accessibility
+        run: |
+          $testResult = Test-NetConnection -ComputerName localhost -Port 3389
+          if (-not $testResult.TcpTestSucceeded) {
+              Write-Error "RDP Port 3389 is not listening locally."
+              exit 1
+          }
+          Write-Host "RDP Port 3389 is Open Locally."
+
+      # 6. Display Credentials and Maintain Connection
+      - name: Display Connection Info
+        run: |
+          Write-Host "`n============================================"
+          Write-Host "   RDP CONNECTION ESTABLISHED (via Ngrok)"
+          Write-Host "============================================"
+          Write-Host "Host/IP    : $env:NGROK_URL"
+          Write-Host "Username   : runneradmin"
+          Write-Host "Password   : D12345678@"
+          Write-Host "--------------------------------------------"
+          Write-Host "Backup User: RDP"
+          Write-Host "Backup Pass: D12345678@"
+          Write-Host "============================================"
+          Write-Host "INSTRUCTIONS:"
+          Write-Host "1. Open Remote Desktop Connection (MSTSC)"
+          Write-Host "2. Paste the Host/IP above into 'Computer'"
+          Write-Host "3. Click Connect."
+          Write-Host "============================================`n"
+          
+          while ($true) {
+              Write-Host "[$(Get-Date)] Session Active... (Press 'Cancel Workflow' to stop)"
+              Start-Sleep -Seconds 300
+          }
