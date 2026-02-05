@@ -39,11 +39,11 @@ jobs:
         run: |
           choco install ngrok -y
 
-      # 4. Establish Ngrok Tunnel (FINAL FIX)
+      # 4. Establish Ngrok Tunnel (TOKEN ADDED)
       - name: Establish Ngrok Connection
         run: |
-          # Add your authtoken
-          ngrok config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
+          # TOKEN: Your specific token is used here
+          ngrok config add-authtoken 344s6dLHPfKXl5s8zjiE4nDEhGM_3rEEvhRz2HujCa1mcxuM3
           
           # Kill any existing ngrok processes to ensure a clean start
           Get-Process -Name ngrok -ErrorAction SilentlyContinue | Stop-Process -Force
