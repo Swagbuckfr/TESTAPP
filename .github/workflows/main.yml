@@ -1,4 +1,4 @@
-name: R Fixed Ngrok
+name: B Fixed Ngrok
 
 on:
   workflow_dispatch:
