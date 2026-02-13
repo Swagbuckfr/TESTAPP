@@ -1,4 +1,4 @@
-name: B Fixed Ngrok
+name: NV
 
 on:
   workflow_dispatch:
@@ -9,13 +9,14 @@ jobs:
     timeout-minutes: 360000
 
     steps:
-      # 1. Enable RDP and Configure Firewall
+      # 1. Enable RDP (Local configuration only, no external firewall rules needed for Avica)
       - name: Configure RDP Settings
         run: |
+          # Allow RDP connections locally
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
-          netsh advfirewall firewall delete rule name="RDP-Ngrok" 2>$null
-          netsh advfirewall firewall add rule name="RDP-Ngrok" dir=in action=allow protocol=TCP localport=3389
+          # Note: Firewall rules for port 3389 are removed since we are not using Ngrok.
+          # If you plan to use a different tunnel later, you may need to open the firewall manually.
           Restart-Service -Name TermService -Force
 
       # 2. Manage Users and Passwords
@@ -34,136 +35,94 @@ jobs:
               Set-LocalUser -Name "RDP" -Password $securePass
           }
 
-      # 3. Change DNS to Google (New Step)
+      # 3. Change DNS to Google
       - name: Set DNS to Google (8.8.8.8 / 8.8.4.4)
         run: |
-          # Find the active interface (one with a default gateway)
           $activeAdapter = Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway -ne $null } | Select-Object -First 1
           
           if ($activeAdapter) {
               Set-DnsClientServerAddress -InterfaceAlias $activeAdapter.InterfaceAlias -ServerAddresses "8.8.8.8", "8.8.4.4"
               Write-Host "DNS changed to 8.8.8.8 / 8.8.4.4 on interface: $($activeAdapter.InterfaceAlias)"
           } else {
-              # Fallback to 'Ethernet' if auto-detect fails
               Write-Host "Could not auto-detect active adapter. Trying default 'Ethernet'..."
               Set-DnsClientServerAddress -InterfaceAlias "Ethernet" -ServerAddresses "8.8.8.8", "8.8.4.4"
           }
-          # Flush DNS cache to ensure changes take effect immediately
           Clear-DnsClientCache
 
-      # 4. Install Ngrok
-      - name: Install Ngrok
+      # 4. Install Avica (Replaces Ngrok)
+      - name: Install Avica
         run: |
-          choco install ngrok -y
-          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-          Write-Host "Ngrok Version:"
-          ngrok version
+          $ProgressPreference = 'SilentlyContinue'
+          $avicaUrl = "https://download.avica.com/downloader/Avica_setup.exe?_gl=1*1eqqu1s*_gcl_au*Mjk2MjI3MjQ5LjE3Njg3NjExMzguMTQ5MzMxOTM4MS4xNzY4NzYxMjkwLjE3Njg3NjEyOTA."
+          $installerPath = "$env:TEMP\Avica_setup.exe"
+          
+          Write-Host "Downloading Avica..."
+          Invoke-WebRequest -Uri $avicaUrl -OutFile $installerPath
+          
+          Write-Host "Installing Avica silently..."
+          # Assuming /S or /silent works for the installer. If not, it might hang.
+          Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait
+          
+          Write-Host "Attempting to start Avica..."
+          # Common installation path, adjust if necessary
+          $avicaExe = "C:\Program Files\Avica\Avica.exe"
+          if (Test-Path $avicaExe) {
+              Start-Process -FilePath $avicaExe
+              Write-Host "Avica started successfully."
+          } else {
+              Write-Host "Could not find Avica executable at $avicaExe. It may be installed elsewhere."
+          }
 
-      # 5. Establish Ngrok Tunnel
-      - name: Establish Ngrok Connection
+      # 5. Install Additional Tools (ProxyScrape & Nmap)
+      - name: Install Additional Tools
         run: |
-          # Refresh PATH
-          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+          $ProgressPreference = 'SilentlyContinue'
+          
+          # --- Install ProxyScrape Proxy Checker ---
+          $psUrl = "https://downloads.cdn.proxyscrape.com/proxy-checker/proxyscrape-proxy-checker-v1.1.0-x64-win-installer.exe"
+          $psOut = "$env:TEMP\proxyscrape-installer.exe"
+          Write-Host "Downloading ProxyScrape..."
+          Invoke-WebRequest -Uri $psUrl -OutFile $psOut
+          Write-Host "Installing ProxyScrape..."
+          Start-Process -FilePath $psOut -ArgumentList "/S" -Wait -NoNewWindow
+          
+          # --- Install Nmap ---
+          $nmapUrl = "https://nmap.org/dist/nmap-7.98-setup.exe"
+          $nmapOut = "$env:TEMP\nmap-installer.exe"
+          Write-Host "Downloading Nmap..."
+          Invoke-WebRequest -Uri $nmapUrl -OutFile $nmapOut
+          Write-Host "Installing Nmap..."
+          Start-Process -FilePath $nmapOut -ArgumentList "/S" -Wait -NoNewWindow
+          
+          Write-Host "Additional tools installed successfully."
 
-          # 1. Simply add the token to the default config location (No manual paths)
-          ngrok config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
-          
-          # 2. Clean up
-          $logFile = "C:\ngrok.log"
-          Get-Process -Name ngrok -ErrorAction SilentlyContinue | Stop-Process -Force
-          Remove-Item -Path $logFile -ErrorAction SilentlyContinue
-          
-          Write-Host "Starting Ngrok with default configuration..."
-          
-          # 3. Start Ngrok
-          cmd /c start /b ngrok tcp 3389 --log="$logFile"
-          
-          Write-Host "Waiting for Ngrok to start..."
-          Start-Sleep -Seconds 5
-          
-          $ngrokUrl = $null
-          $retries = 0
-          $maxRetries = 60 
-          
-          while (-not $ngrokUrl -and $retries -lt $maxRetries) {
-              $retries++
-              Start-Sleep -Seconds 2
-              
-              # 1. Check if process is running
-              $process = Get-Process -Name ngrok -ErrorAction SilentlyContinue
-              if (-not $process) {
-                  Write-Error "Ngrok process crashed! Attempting to read log file ($logFile):"
-                  if (Test-Path $logFile) {
-                      Get-Content $logFile | Write-Host
-                  } else {
-                      Write-Host "Log file not found at $logFile."
-                  }
-                  exit 1
-              }
-              
-              # 2. Check if API Port (4040) is open
-              $portCheck = Test-NetConnection -ComputerName localhost -Port 4040 -WarningAction SilentlyContinue
-              if (-not $portCheck.TcpTestSucceeded) {
-                  Write-Host "Attempt $($retries)/$($maxRetries): Ngrok API port 4040 not open yet..."
-                  continue
-              }
-              
-              # 3. Fetch URL from API
-              try {
-                  $response = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels" -ErrorAction Stop
-                  
-                  if ($response.tunnels -and $response.tunnels.Count -gt 0) {
-                      $ngrokUrl = $response.tunnels[0].public_url
-                      Write-Host "Ngrok Tunnel found: $ngrokUrl"
-                  }
-              } catch {
-                  Write-Host "Attempt $($retries)/$($maxRetries): API port open, but waiting for data..."
-              }
-          }
-          
-          if (-not $ngrokUrl) {
-              Write-Error "Failed to retrieve Ngrok URL after $maxRetries attempts."
-              Write-Host "Printing Ngrok logs:"
-              if (Test-Path $logFile) {
-                  Get-Content $logFile | Write-Host
-              }
-              exit 1
-          }
-          
-          $rdpHost = $ngrokUrl -replace "tcp://", ""
-          echo "NGROK_URL=$rdpHost" >> $env:GITHUB_ENV
-          echo "RAW_URL=$ngrokUrl" >> $env:GITHUB_ENV
-
-      # 6. Verify Connectivity
-      - name: Verify RDP Accessibility
-        run: |
-          $testResult = Test-NetConnection -ComputerName localhost -Port 3389
-          if (-not $testResult.TcpTestSucceeded) {
-              Write-Error "RDP Port 3389 is not listening locally."
-              exit 1
-          }
-          Write-Host "RDP Port 3389 is Open Locally."
-
-      # 7. Display Credentials and Maintain Connection
+      # 6. Display Connection Info
       - name: Display Connection Info
         run: |
           Write-Host "`n============================================"
-          Write-Host "   RDP CONNECTION ESTABLISHED (via Ngrok)"
+          Write-Host "   AVICA REMOTE DESKTOP SETUP COMPLETE"
           Write-Host "============================================"
-          Write-Host "Host/IP    : $env:NGROK_URL"
+          Write-Host "NOTE: Ngrok has been removed."
+          Write-Host "There is no public IP address to display here."
+          Write-Host "--------------------------------------------"
+          Write-Host "ACTION REQUIRED:"
+          Write-Host "1. Check your Avica Web Console/Device List."
+          Write-Host "2. Look for the device named 'WIN-' (Windows Hostname)."
+          Write-Host "3. Connect via Avica using that device ID."
+          Write-Host "--------------------------------------------"
+          Write-Host "LOCAL CREDENTIALS (If needed):"
           Write-Host "Username   : runneradmin"
           Write-Host "Password   : D12345678@"
-          Write-Host "--------------------------------------------"
           Write-Host "Backup User: RDP"
           Write-Host "Backup Pass: D12345678@"
           Write-Host "============================================"
-          Write-Host "INSTRUCTIONS:"
-          Write-Host "1. Open Remote Desktop Connection (MSTSC)"
-          Write-Host "2. Paste the Host/IP above into 'Computer'"
-          Write-Host "3. Click Connect."
+          Write-Host "INSTALLED TOOLS:"
+          Write-Host "- Avica Remote Desktop"
+          Write-Host "- ProxyScrape Proxy Checker"
+          Write-Host "- Nmap"
           Write-Host "============================================`n"
           
           while ($true) {
-              Write-Host "[$(Get-Date)] Session Active... (Press 'Cancel Workflow' to stop)"
+              Write-Host "[$(Get-Date)] Session Active... Waiting for Avica Connection..."
               Start-Sleep -Seconds 300
           }
